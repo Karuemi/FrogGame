@@ -9,6 +9,9 @@ https://www.gnu.org/software/guile-ncurses/manual/html_node/Getting-characters-f
 http://allaboutfrogs.org/gallery/frogstuff/ascii.html
 https://stackoverflow.com/
 https://www.asciiart.eu/animals/birds-land
+
+GITHUB (private):
+https://github.com/Karuemi/FrogGame
 */
 
 #include <locale.h>
