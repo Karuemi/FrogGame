@@ -1,4 +1,18 @@
+/*
+Pawel Richert 203693
+
+SOURCES:
+https://developer.mozilla.org/en-US/docs/Games/Techniques/2D_collision_detection
+https://tldp.org/HOWTO/NCURSES-Programming-HOWTO/
+https://www.geeksforgeeks.org/
+https://www.gnu.org/software/guile-ncurses/manual/html_node/Getting-characters-from-the-keyboard.html
+http://allaboutfrogs.org/gallery/frogstuff/ascii.html
+https://stackoverflow.com/
+*/
+
 #include <locale.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -6,13 +20,12 @@
 #include <unistd.h>
 #include <ncurses.h>
 #include <sys/time.h>
-#include <math.h>
 #include <time.h>
 
 enum TIMER {
 	TIMER_PRECISION = (int)1e6,
     FPS = 60,
-    TPS = 5
+    TPS = 20
 };
 
 enum COLORS {
@@ -22,7 +35,11 @@ enum COLORS {
 	FROG_COLOR,
 	CAR_COLOR,
 	STREET_COLOR,
-	ROCK_COLOR
+	ROCK_COLOR,
+	NORMAL_CAR_COLOR,
+	STOP_CAR_COLOR,
+	FRIEND_CAR_COLOR,
+	HOSTILE_CAR_COLOR
 };
 
 enum LEVELS {
@@ -34,22 +51,35 @@ enum LEVELS {
 
 enum LANES {
 	ROCKS = 0,
-	CARS,
+	LEFT_CARS,
+	RIGHT_CARS,
 	NONE
 };
 
-enum CAR_TYPES {
+enum LANE_TYPES {
 	NORMAL_CAR = 0,
 	STOP_CAR,
 	FRIEND_CAR,
-	HOSTILE_CAR
+	HOSTILE_CAR,
+	WARP_CAR,
+	OTHER
 };
 
 enum LEVEL_1 {
 	NONE_RATIO_1 = 1,
 	CAR_RATIO_1 = 2,
 	ROCK_RATIO_1 = 2,
-	ROCK_DENSITY_1 = 20
+	ROCK_DENSITY_1 = 20,
+	CAR_DENSITY_1 = 10,
+	CAR_PLACER_1 = 5,
+	IS_NORMAL_1 = 1,
+	IS_STOP_1 = 1,
+	IS_FRIEND_1 = 1,
+	IS_HOSTILE_1 = 1,
+	MIN_SPEED_1 = 100,
+	MAX_SPEED_1 = 500,
+	SPEED_UP_1 = 20,
+	REAPPEAR_DIST_1 = 50
 };
 
 enum MAP {
@@ -58,6 +88,7 @@ enum MAP {
 	STATUS_HEIGHT = 5,
 	INIT_CARS = 5,
 	MAX_CARS = 64,
+	MIN_CARS = 5,
 	MAX_ROCKS = 128,
 	BUFFER_SIZE = 128
 };
@@ -81,7 +112,26 @@ typedef struct {
 
 typedef struct {
 	double timePassed;
+	char level[BUFFER_SIZE];
+	double points;
+	int jumps;
 } StatusInfo;
+
+typedef struct {
+	int noneRatio;
+	int carRatio;
+	int rockRatio;
+	int rockDensity;
+	int carDensity;
+	int carPlacerSpacing;
+	uint8_t isNormal;
+	uint8_t isStop;
+	uint8_t isFriend;
+	uint8_t isHostile;
+	int maxSpeed;
+	int minSpeed;
+	int speedUp;
+} LevelInfo;
 
 typedef struct {
 	char** shape;
@@ -96,28 +146,40 @@ typedef struct {
 	char** leftShape;
 	char** rightShape;
 	double x[MAX_CARS];
-	double y[MAX_CARS];
-	char side[MAX_CARS];
-	enum CAR_TYPES type[MAX_CARS];
+	int y[MAX_CARS];
 	int w;
 	int h;
 	int amount;
+	int speedUp;
 } Cars;
 
 typedef struct {
-	double x;
-	double y;
+	double xX;
+	double yY;
+	int x;
+	int y;
 	int w;
 	int h;
-	double speed;
 	char** shape;
+	int jumps;
+	uint8_t queueEnding;
 } Frog;
+
+typedef struct {
+	enum LANES v[HEIGHT];
+	enum LANE_TYPES type[HEIGHT];
+	double speed[HEIGHT];
+	double setSpeed[HEIGHT];
+	int minSpeed;
+	int maxSpeed;
+	int reappearDist;
+} Lanes;
 
 typedef struct {
 	Frog frog;
 	Cars cars;
 	Rocks rocks;
-	int lanes[HEIGHT];
+	Lanes lanes;
 } Objects;
 
 typedef struct {
@@ -246,6 +308,7 @@ void initFrogShape(Frog* frog, FILE* file, int w, int h) {
 	frog->shape = allocShape(w, h);
 	frog->w = w;
 	frog->h = h;
+	frog->jumps = 0;
 	char temp;
 
 	for (int i = 0; i < h; ++i) {
@@ -270,12 +333,12 @@ void initRocksShape(Rocks* rocks, FILE* file, int w, int h) {
 	}
 }
 
-void initCarsShape(Cars* cars, FILE* file, const int w, const int h, const char side) {
+void initCarsShape(Cars* cars, FILE* file, const int w, const int h, enum LANES side) {
 	cars->w = w;
 	cars->h = h;
 	char temp;
 
-	if (side == 'R') {
+	if (side == RIGHT_CARS) {
 		cars->rightShape = allocShape(w, h);
 		for (int i = 0; i < h; ++i) {
 			for (int j = 0; j < w; ++j) {
@@ -284,7 +347,7 @@ void initCarsShape(Cars* cars, FILE* file, const int w, const int h, const char 
 		fscanf(file, "%c", &temp);
 	}
 
-	} else if (side == 'L') {
+	} else if (side == LEFT_CARS) {
 		cars->leftShape = allocShape(w, h);
 		for (int i = 0; i < h; ++i) {
 			for (int j = 0; j < w; ++j) {
@@ -311,10 +374,10 @@ void initShapes(Objects* objects) {
 			initFrogShape(&objects->frog, file, w, h);
 
 		} else if (strcmp(buffer, "carShapeL") == 0) {
-			initCarsShape(&objects->cars, file, w, h, 'L');
+			initCarsShape(&objects->cars, file, w, h, LEFT_CARS);
 
 		} else if (strcmp(buffer, "carShapeR") == 0) {
-			initCarsShape(&objects->cars, file, w, h, 'R');
+			initCarsShape(&objects->cars, file, w, h, RIGHT_CARS);
 
 		} else if (strcmp(buffer, "rockShape") == 0) {
 			initRocksShape(&objects->rocks, file, w, h);
@@ -330,26 +393,94 @@ void initShapes(Objects* objects) {
 	fclose(file);
 }
 
-void initLanes(int lanes[HEIGHT], int noneRatio, int carsRatio, int rocksRatio) {
-	lanes[0] = NONE;
-	lanes[HEIGHT - 1] = NONE;
+void initBasicLanes(Lanes* lanes) {
+	lanes->v[0] = NONE;
+	lanes->v[1] = RIGHT_CARS;
+	lanes->v[HEIGHT - 1] = NONE;
+
+	for (int i = 0; i < HEIGHT; ++i) {
+		lanes->type[i] = OTHER;
+	}
+}
+
+void initLanesTypes(Lanes* lanes, uint8_t isNormal, uint8_t isStop, uint8_t isFriend, uint8_t isHostile) {
+	lanes->type[1] = WARP_CAR;
+	lanes->speed[1] = (rand() % (lanes->maxSpeed - lanes->minSpeed) + lanes->minSpeed) * 0.01f;
+	lanes->setSpeed[1] = lanes->speed[1];
+	uint8_t loop = 1;
+	int r;
+
+	for (int i = 2; i < HEIGHT - 1; ++i) {
+		lanes->speed[i] = (rand() % (lanes->maxSpeed - lanes->minSpeed) + lanes->minSpeed) * 0.01f;
+		lanes->setSpeed[i] = lanes->speed[i];
+		loop = 1;
+
+		while (loop) {
+			r =  rand() % 4;
+
+			switch (r) {
+				case NORMAL_CAR:
+					if (isNormal) {
+						lanes->type[i] = NORMAL_CAR;
+						loop = 0;
+					}
+				break;
+
+				case STOP_CAR:
+					if (isStop) {
+						lanes->type[i] = STOP_CAR;
+						loop = 0;
+					}
+				break;
+
+				case FRIEND_CAR:
+					if (isFriend) {
+						lanes->type[i] = FRIEND_CAR;
+						loop = 0;
+					}
+				break;
+
+				case HOSTILE_CAR:
+					if (isHostile) {
+						lanes->type[i] = HOSTILE_CAR;
+						loop = 0;
+					}
+				break;
+			}
+		}
+	}
+}
+
+void initLanes(Lanes* lanes, int noneRatio, int carsRatio, int rocksRatio, int minSpeed, int maxSpeed, int reappearDist) {
+	initBasicLanes(lanes);
 
 	int all = noneRatio + carsRatio + rocksRatio;
-	double r;
+	double r, r2;
 
-	for (int i = 1; i < HEIGHT - 1; ++i) {
+	lanes->minSpeed = minSpeed;
+	lanes->maxSpeed = maxSpeed;
+	lanes->reappearDist = reappearDist;
+
+	for (int i = 2; i < HEIGHT - 1; ++i) {
 		while (true) {
 			r = ((double)rand()) / RAND_MAX;
 
 			if (r <= noneRatio / (double)all) {
-				lanes[i] = NONE;
+				lanes->v[i] = NONE;
+				
 			} else if (r <= (carsRatio + noneRatio) / (double)all) {
-				lanes[i] = CARS;
+				r2 = ((double)rand()) / RAND_MAX;
+
+				if (r2 <= 0.5f) {
+					lanes->v[i] = LEFT_CARS;
+				} else {
+					lanes->v[i] = RIGHT_CARS;
+				}
 			} else if (r <= (rocksRatio + carsRatio + noneRatio) / (double)all) {
-				lanes[i] = ROCKS;
+				lanes->v[i] = ROCKS;
 			}
 
-			if (lanes[i - 1] == ROCKS && lanes[i] == ROCKS ) {
+			if (lanes->v[i - 1] == ROCKS && lanes->v[i] == ROCKS ) {
 				continue;
 			} else {
 				break;
@@ -359,19 +490,19 @@ void initLanes(int lanes[HEIGHT], int noneRatio, int carsRatio, int rocksRatio) 
 	}
 }
 
-void initRocks(Objects* objects, const double FACTOR) {
+void initRocks(Objects* objects, const int ROCK_DENSITY) {
 	objects->rocks.amount = 0;
 	double r;
 
 	for (int i = 0; i < HEIGHT; ++i) {
-		if (objects->lanes[i] != ROCKS) {
+		if (objects->lanes.v[i] != ROCKS) {
 			continue;
 		}
 
 		for (int j = 0; j < WIDTH; ++j) {
 			r = (((double)rand()) / RAND_MAX ) * 100;
 
-			if (r <= ROCK_DENSITY_1) {
+			if (r <= ROCK_DENSITY) {
 				objects->rocks.x[objects->rocks.amount] = j;
 				objects->rocks.y[objects->rocks.amount] = i;
 				objects->rocks.amount++;
@@ -380,33 +511,87 @@ void initRocks(Objects* objects, const double FACTOR) {
 	}
 }
 
-void initCars(Objects* objects) {
+void initCars(Map* map, Objects* objects, const int CAR_DENSITY, const int CAR_PLACER, const int SPEED_UP) {
+	double r;
+	int placer = 0;
+	Cars* cars = &objects->cars;
+	cars->speedUp = SPEED_UP;
 
+	int* amount = &cars->amount;
+	*amount = 0;
+	
+	for (int i = 0; i < HEIGHT; ++i) {
+
+		if (objects->lanes.type[i] == WARP_CAR) {
+			placer = map->renderW / 2;
+
+			for (int j = 0; j < MIN_CARS; ++j) {
+				cars->y[*amount] = i;
+				cars->x[*amount] = placer;
+				(*amount)++;
+
+				placer += cars->w + 1;
+			}
+			continue;
+		}
+
+		if (objects->lanes.v[i] != LEFT_CARS && objects->lanes.v[i] != RIGHT_CARS ) {
+			continue;
+		}
+
+		placer = -cars->w + 1;
+		while (placer < map->renderW + cars->w) {
+			if (*amount == MAX_CARS - 1) {
+				break;
+			}
+
+			r = (((double)rand()) / RAND_MAX ) * 100.0f;
+
+			if (r <= CAR_DENSITY) { 
+				cars->y[*amount] = i;
+				cars->x[*amount] = placer;
+				(*amount)++;
+
+				placer += cars->w + 1;
+			} else {
+				placer += CAR_PLACER;
+			}
+		}
+	}
 }
 
 void initFrog(Objects* objects) {
 	objects->frog.x = WIDTH / 2.0f;
 	objects->frog.y = HEIGHT - 1;
+	objects->frog.queueEnding = 0;
 }
 
-void initObjects(Objects* objects) { /// easy
-	initFrog(objects);
+void initObjects(Map* map) {
+	initShapes(&map->objects);
 
-	initLanes(objects->lanes, NONE_RATIO_1, CAR_RATIO_1, ROCK_RATIO_1);
+	initFrog(&map->objects);
 
-	initRocks(objects, ROCK_DENSITY_1);
-	initCars(objects);
+	initLanes(&map->objects.lanes, NONE_RATIO_1, CAR_RATIO_1, ROCK_RATIO_1, MIN_SPEED_1, MAX_SPEED_1, REAPPEAR_DIST_1);
+	initLanesTypes(&map->objects.lanes, IS_NORMAL_1, IS_STOP_1, IS_FRIEND_1, IS_HOSTILE_1);
 
-	initShapes(objects);
+	initRocks(&map->objects, ROCK_DENSITY_1);
+	initCars(map, &map->objects, CAR_DENSITY_1, CAR_PLACER_1, SPEED_UP_1);
 }
 
 void putStreetLines(Map* map) {
 	for (int i = 0; i < HEIGHT; ++i) {
-		if (map->objects.lanes[i] == CARS) {
+		if (map->objects.lanes.v[i] == LEFT_CARS || map->objects.lanes.v[i] == RIGHT_CARS) {
 			for (int j = 0; j < map->renderW; ++j) {
-				if (j % 10 == 0 || j % 10 == 1 || j % 10 == 2) {
-					map->tiles[i * map->objects.frog.h + 2][j].v = '-';
-					map->tiles[i * map->objects.frog.h + 2][j].c = STREET_COLOR;
+				if (i % 2 == 0) {
+					if (j % 10 == 0 || j % 10 == 1 || j % 10 == 2) {
+						map->tiles[i * map->objects.frog.h + 2][j].v = '-';
+						map->tiles[i * map->objects.frog.h + 2][j].c = STREET_COLOR;
+					}
+				} else {
+					if (j % 10 == 5 || j % 10 == 6 || j % 10 == 7) {
+						map->tiles[i * map->objects.frog.h + 2][j].v = '-';
+						map->tiles[i * map->objects.frog.h + 2][j].c = STREET_COLOR;
+					}
 				}
 			}
 		}
@@ -414,60 +599,100 @@ void putStreetLines(Map* map) {
 }
 
 void putShape(Map* map, const int X, const int Y, const int W, const int H, enum COLORS c, char** shape) {
+	Frog* frog = &map->objects.frog;
+
 	for (int i = 0; i < H; ++i) {
 		for (int j = 0; j < W; ++j) {
-			if (Y * H + i >= map->renderH || X * W + j >= map->renderW) {
+			if (Y + i >= map->renderH || X + j >= map->renderW || 
+				Y + i < 0 ||  X + j < 0 ) {
 				continue;
 			}
-			map->tiles[Y * H + i][X * W + j].v = shape[i][j];
-			map->tiles[Y * H + i][X * W + j].c = c;
+			map->tiles[Y + i][X + j].v = shape[i][j];
+			map->tiles[Y + i][X + j].c = c;
 		}
 	}
 }
 
-void fillMap(Map* map) {
+void fillEmpty(Map* map) {
 	for (int i = 0; i < map->renderH; ++i) {
 		for (int j = 0; j < map->renderW; ++j) {
 			map->tiles[i][j].v = ' ';
 			map->tiles[i][j].c = EMPTY_COLOR;
 		}
 	}
+}
 
-	putStreetLines(map);
+void fillRocks(Map* map) {
+	Frog* frog = &map->objects.frog;
 
-	// rocks
 	for (int i = 0; i < map->objects.rocks.amount; ++i) {
 		Rocks* rocks = &map->objects.rocks;
-		putShape(map, rocks->x[i], rocks->y[i], rocks->w, rocks->h, ROCK_COLOR, rocks->shape);
+		putShape(map, rocks->x[i] * frog->w, rocks->y[i] * frog->h, rocks->w, rocks->h, ROCK_COLOR, rocks->shape);
 	}
+}
 
-	// cars
+void fillCars(Map* map) {
+	Frog* frog = &map->objects.frog;
+
+	Cars* cars = &map->objects.cars;
 	char** carShape;
-	for (int i = 0; i < map->objects.cars.amount; ++i) {
-		Cars* cars = &map->objects.cars;
+	enum COLORS color;
 
-		if (cars->side[i] == 'R') {
+	for (int i = 0; i < cars->amount; ++i) {
+		if (map->objects.lanes.v[cars->y[i]] == RIGHT_CARS) {
 			carShape = cars->rightShape;
 		} else {
-			carShape = cars->rightShape;
+			carShape = cars->leftShape;
 		}
 
-		putShape(map, cars->x[i], cars->y[i], cars->w, cars->h, CAR_COLOR, carShape);
-	}
+		switch (map->objects.lanes.type[cars->y[i]]) {
+			case NORMAL_CAR:
+				color = NORMAL_CAR_COLOR;
+			break;
 
+			case STOP_CAR:
+				color = STOP_CAR_COLOR;
+			break;
+
+			case FRIEND_CAR:
+				color = FRIEND_CAR_COLOR;
+			break;
+
+			case HOSTILE_CAR:
+				color = HOSTILE_CAR_COLOR;
+			break;
+
+			case WARP_CAR:
+				color = NORMAL_CAR_COLOR;
+			break;
+
+			case OTHER:
+				color = NORMAL_CAR_COLOR;
+			break;
+		}
+
+		putShape(map, (int)cars->x[i], cars->y[i] * frog->h, cars->w, cars->h, color, carShape);
+	}
+}
+
+void fillMap(Map* map) {
 	Frog* frog = &map->objects.frog;
-	putShape(map, frog->x, frog->y, frog->w, frog->h, FROG_COLOR, frog->shape);
+
+	fillEmpty(map);
+	putStreetLines(map);
+	fillRocks(map);
+	fillCars(map);
+
+	putShape(map, frog->x * frog->w, frog->y * frog->h, frog->w, frog->h, FROG_COLOR, frog->shape);
 }
 
 Map* initMap(Size* size) {
 	Map* map = allocMap(size);
 
-	// get from file here
-	map->objects.frog.speed = 1.0f;
 	map->renderW = size->w;
 	map->renderH = size->h;
 
-	initObjects(&map->objects);
+	initObjects(map);
 	fillMap(map);
 
 	return map;
@@ -475,13 +700,28 @@ Map* initMap(Size* size) {
 
 /// UPDATE TICK
 
-void checkWin(Frog* frog) {
-	if (frog->y != 0) {
-		return;
+void frogBorderCollision(Frog* frog) {
+	if (frog->x < 0) {
+		frog->x = 0;
+		frog->jumps--;
 	}
+	if (frog->x >= WIDTH) {
+		frog->x = WIDTH - 1;
+		frog->jumps--;
+	}
+	if (frog->y < 0) {
+		frog->y = 0;
+		frog->jumps--;
+	}
+	if (frog->y >= HEIGHT) {
+		frog->y = HEIGHT - 1;
+		frog->jumps--;
+	}
+}
 
-	char text[] = "Congratulations You Won!";
+void popupWindow(char text[]) {
 	Size size = {40, 5};
+
 	Window won = initBasicWindow(&size);
 
 	mvwprintw(won.val, won.H / 2, won.W / 2 - strlen(text) / 2, "%s", text);
@@ -496,48 +736,197 @@ void checkWin(Frog* frog) {
 	exit(0);
 }
 
-void movePlayer(Frog* frog, const int KEY) {
+void checkEnding(Frog* frog) {
+	if (frog->y == 0) {
+		char text[] = "Congratulations You Won!";
+		popupWindow(text);
+	}
+	if (frog->queueEnding) {
+		char text[] = "You Lost the Game :(";
+		popupWindow(text);
+	}
+}
+
+uint8_t checkCarCollision(Frog* frog, Cars* cars, int offX, int offY, int i) {
+	if (frog->x * frog->w < cars->x[i] + cars->w + offX &&
+		frog->x * frog->w + frog->w + offX > cars->x[i] &&
+		frog->y * frog->h < cars->y[i] * frog->h + cars->h + offY &&
+		frog->y * frog->h + frog->h + offY > cars->y[i] * frog->h) {
+		return 1;
+	}
+	
+	return 0;
+}
+
+void handleCars(Lanes* lanes, Frog* frog, Cars* cars) {
+	int blockLaneSpeed = -1;
+	int increaseLaneSpeed = -1;
+
+	for (int i = 0; i < cars->amount; ++i) {
+		if (checkCarCollision(frog, cars, 0, 0, i)) {
+			if (lanes->type[cars->y[i]] != FRIEND_CAR) {
+				frog->queueEnding = 1;
+			} else {
+				if (lanes->v[cars->y[i]] == LEFT_CARS) {
+					frog->x = (cars->x[i] + cars->w) / (double)frog->w;
+				} else {
+					frog->x = cars->x[i] / (double)frog->w;
+				}
+
+				frogBorderCollision(frog);
+			}
+		}
+
+		if (lanes->type[cars->y[i]] == STOP_CAR) {
+			if (checkCarCollision(frog, cars, 5, 0, i)) {
+				blockLaneSpeed = cars->y[i];
+			} else {
+				lanes->speed[cars->y[i]] += cars->speedUp * 0.01f;
+				if (lanes->speed[cars->y[i]] >= lanes->setSpeed[cars->y[i]]) {
+					lanes->speed[cars->y[i]] = lanes->setSpeed[cars->y[i]];
+				}
+			}
+		}
+
+		if (lanes->type[cars->y[i]] == HOSTILE_CAR) {
+			if (checkCarCollision(frog, cars, WIDTH * frog->w, 0, i)) {
+				increaseLaneSpeed = cars->y[i];
+			} else {
+				lanes->speed[cars->y[i]] -= cars->speedUp * 0.01f;
+
+				if (lanes->speed[cars->y[i]] <= lanes->setSpeed[cars->y[i]]) {
+					lanes->speed[cars->y[i]] = lanes->setSpeed[cars->y[i]];
+				}
+			}
+		}
+	}
+
+	for (int i = 0; i < HEIGHT; ++i) {
+		if (lanes->v[i] != LEFT_CARS && lanes->v[i] != RIGHT_CARS) {
+			continue;
+		}
+
+		if (blockLaneSpeed != -1) {
+			lanes->speed[blockLaneSpeed] = 0;
+		}
+
+		if (increaseLaneSpeed != -1) {
+			lanes->speed[increaseLaneSpeed] += cars->speedUp * 0.01f;
+		}
+	}
+}
+
+uint8_t rockCollision(Frog* frog, Rocks* rocks) {
+	for (int i = 0; i < rocks->amount; ++i) {
+		if (rocks->x[i] == frog->x && rocks->y[i] == frog->y ) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+void movePlayer(Frog* frog, Rocks* rocks, const int KEY) {
 	if (KEY == ERR) {
 		return;
 	}
 
 	switch(KEY) {
 		case KEY_UP:
-			frog->y -= frog->speed;
+			frog->y--;
+			if (rockCollision(frog, rocks)) {
+				frog->y++;
+			} else {
+				frog->jumps++;
+			}
 		break;
 
 		case KEY_DOWN:
-			frog->y += frog->speed;
+			frog->y++;
+			if (rockCollision(frog, rocks)) {
+				frog->y--;
+			} else {
+				frog->jumps++;
+			}
 		break;
 
 		case KEY_LEFT:
-			frog->x -= frog->speed;
+			frog->x--;
+			if (rockCollision(frog, rocks)) {
+				frog->x++;
+			} else {
+				frog->jumps++;
+			}
 		break;
 
 		case KEY_RIGHT:
-			frog->x += frog->speed;
+			frog->x++;
+			if (rockCollision(frog, rocks)) {
+				frog->x--;
+			} else {
+				frog->jumps++;
+			}
 		break;
 	}
 
-	// border collision
-	if (frog->x < 0) {
-		frog->x = 0;
-	}
-	if (frog->x >= WIDTH) {
-		frog->x = WIDTH - 1;
-	}
-	if (frog->y < 0) {
-		frog->y = 0;
-	}
-	if (frog->y >= HEIGHT) {
-		frog->y = HEIGHT - 1;
+	frogBorderCollision(frog);
+}
+
+void moveCars(Map* map) {
+	Cars* cars = &map->objects.cars;
+	Lanes* lanes = &map->objects.lanes;
+	int reverse = 1;
+	int left = 1;
+
+	for (int i = 0; i < cars->amount; ++i) {
+		if (lanes->v[cars->y[i]] == LEFT_CARS) {
+			reverse = 1;
+			left = 1;
+		} else {
+			reverse = -1;
+			left = 0;
+		}
+
+		cars->x[i] += lanes->speed[cars->y[i]] * reverse;
+
+		if (map->objects.lanes.type[cars->y[i]] == WARP_CAR) {
+			if (cars->x[i] < -cars->w && !left) {
+				cars->x[i] = map->renderW + cars->w;
+			} else if (cars->x[i] > map->renderW + cars->w && left) {
+				cars->x[i] = -cars->w;
+			}
+		} else { // change car lanes
+			if (cars->x[i] < -cars->w && !left || cars->x[i] > map->renderW + cars->w && left) {
+				while (true) {
+					int r = rand() % (HEIGHT - 1) + 2;
+					int r2 = 0;
+
+					if (lanes->v[r] == LEFT_CARS || lanes->v[r] == RIGHT_CARS) {
+						r2 = rand() % lanes->reappearDist;
+						cars->y[i] = r;
+					}
+					
+					if (lanes->v[r] == LEFT_CARS) {
+						cars->x[i] = -r2 -cars->w;	
+						break;
+					} else if (lanes->v[r] == RIGHT_CARS) {
+						cars->x[i] = r2 + map->renderW + cars->w;
+						break;
+					}
+				}
+			}
+		}
 	}
 }
 
 void updateTick(Map* map, const int KEY) {
-	checkWin(&map->objects.frog);
+	checkEnding(&map->objects.frog);
 
-	movePlayer(&map->objects.frog, KEY);
+	moveCars(map);
+
+	movePlayer(&map->objects.frog, &map->objects.rocks, KEY);
+
+	handleCars(&map->objects.lanes, &map->objects.frog, &map->objects.cars);
+
 	fillMap(map);
 }
 
@@ -584,7 +973,12 @@ void renderStatusWindow(Window* statusWindow, StatusInfo* info) {
 		}
 	}
 
-	mvwprintw(statusWindow->val, statusWindow->H / 2.0f, 2, "Time: %.02lf", info->timePassed);
+	const int WH2 = statusWindow->H / 2.0f;
+	mvwprintw(statusWindow->val, WH2, statusWindow->W * 0.05f, "Time: %.02lf", info->timePassed);
+	mvwprintw(statusWindow->val, WH2, statusWindow->W * 0.2f, "Jumps: %d", info->jumps);
+	mvwprintw(statusWindow->val, WH2, statusWindow->W * 0.35f, "Points: %.02lf", info->points);
+	mvwprintw(statusWindow->val, WH2, statusWindow->W * 0.58f, "%s", info->level);
+	mvwprintw(statusWindow->val, WH2, statusWindow->W * 0.75f, "Pawel Richert 203693");
 	wattroff(statusWindow->val, COLOR_PAIR(BORDER_COLOR));
 	wrefresh(statusWindow->val);
 }
@@ -595,8 +989,29 @@ void renderFrame(Window* mainWindow, Window* statusWindow, Map* map, StatusInfo*
 	refresh();
 }
 
-void updateStatusInfo(StatusInfo* info, Timer* timer) {
+void updateStatusInfo(StatusInfo* info, enum LEVELS level, Timer* timer, Frog* frog) {
 	info->timePassed = timer->sinceStart / (double)TIMER_PRECISION;
+
+	switch (level) {
+		case EASY:
+			strcpy(info->level, "Easy Level");
+		break;
+
+		case MEDIUM:
+			strcpy(info->level, "Medium Level");
+		break;
+
+		case HARD:
+			strcpy(info->level, "Hard Level");
+		break;
+
+		case REPLAY:
+			strcpy(info->level, "Replay Mode");
+		break;
+	}
+
+	info->jumps = frog->jumps;
+	info->points = 1000.0f - ((int)info->timePassed * frog->jumps);
 }
 
 Size* initRenderSize() {
@@ -623,13 +1038,16 @@ Size* initRenderSize() {
 }
 
 void initColors() {
-	init_pair(EMPTY_COLOR, COLOR_RED, COLOR_BLACK); // none
-	init_pair(BORDER_COLOR, COLOR_BLACK, COLOR_BLUE); // border
-	init_pair(FROG_COLOR, COLOR_GREEN, COLOR_BLACK); // frog
-	init_pair(CAR_COLOR, COLOR_WHITE, COLOR_BLACK); // car
-	init_pair(FINISH_COLOR, COLOR_GREEN, COLOR_BLACK); // finish line
-	init_pair(STREET_COLOR, COLOR_WHITE, COLOR_BLACK); // street line
-	init_pair(ROCK_COLOR, COLOR_WHITE, COLOR_BLACK); // rock color
+	init_pair(EMPTY_COLOR, COLOR_RED, COLOR_BLACK);
+	init_pair(BORDER_COLOR, COLOR_BLACK, COLOR_BLUE);
+	init_pair(FROG_COLOR, COLOR_GREEN, COLOR_BLACK);
+	init_pair(FINISH_COLOR, COLOR_GREEN, COLOR_BLACK);
+	init_pair(STREET_COLOR, COLOR_WHITE, COLOR_BLACK);
+	init_pair(ROCK_COLOR, COLOR_WHITE, COLOR_BLACK);
+	init_pair(NORMAL_CAR_COLOR, COLOR_WHITE, COLOR_BLACK);
+	init_pair(STOP_CAR_COLOR, COLOR_YELLOW, COLOR_BLACK);
+	init_pair(FRIEND_CAR_COLOR, COLOR_MAGENTA, COLOR_BLACK);
+	init_pair(HOSTILE_CAR_COLOR, COLOR_RED, COLOR_BLACK);
 }
 
 /// MAIN LOOP
@@ -737,7 +1155,7 @@ void runGame() {
 
 	Size* renderSize = initRenderSize();
 
-	enum LEVELS level = EASY;
+	enum LEVELS level;
 	showMenu(renderSize, &level);
 	
 	Window mainWindow = initWindow(renderSize->h + STATUS_HEIGHT, renderSize->h + 2, renderSize->w + 2, 0, 0);
@@ -755,7 +1173,7 @@ void runGame() {
 	timer->start = getCurrentTime();
     while (continueLoop) {
 		updateTimer(timer);
-		updateStatusInfo(statusInfo, timer);
+		updateStatusInfo(statusInfo, level, timer, &map->objects.frog);
 		key = getch();
 
 		if (key != ERR) {
@@ -786,7 +1204,6 @@ void runGame() {
 
 int main() {
 	initscr();
-	//setlocale(LC_ALL, "");
 	keypad(stdscr, TRUE);
 	nodelay(stdscr, TRUE);
 	start_color();
