@@ -18,8 +18,11 @@ enum TIMER {
 enum COLORS {
 	EMPTY_COLOR = 0,
 	BORDER_COLOR,
+	FINISH_COLOR,
 	FROG_COLOR,
-	CAR_COLOR
+	CAR_COLOR,
+	STREET_COLOR,
+	ROCK_COLOR
 };
 
 enum LEVELS {
@@ -29,12 +32,33 @@ enum LEVELS {
 	REPLAY
 };
 
+enum LANES {
+	ROCKS = 0,
+	CARS,
+	NONE
+};
+
+enum CAR_TYPES {
+	NORMAL_CAR = 0,
+	STOP_CAR,
+	FRIEND_CAR,
+	HOSTILE_CAR
+};
+
+enum LEVEL_1 {
+	NONE_RATIO_1 = 1,
+	CAR_RATIO_1 = 2,
+	ROCK_RATIO_1 = 2,
+	ROCK_DENSITY_1 = 20
+};
+
 enum MAP {
 	WIDTH = 15,
-	HEIGHT = 10,
+	HEIGHT = 12,
 	STATUS_HEIGHT = 5,
 	INIT_CARS = 5,
 	MAX_CARS = 64,
+	MAX_ROCKS = 128,
 	BUFFER_SIZE = 128
 };
 
@@ -60,6 +84,27 @@ typedef struct {
 } StatusInfo;
 
 typedef struct {
+	char** shape;
+	int x[MAX_ROCKS];
+	int y[MAX_ROCKS];
+	int w;
+	int h;
+	int amount;
+} Rocks;
+
+typedef struct {
+	char** leftShape;
+	char** rightShape;
+	double x[MAX_CARS];
+	double y[MAX_CARS];
+	char side[MAX_CARS];
+	enum CAR_TYPES type[MAX_CARS];
+	int w;
+	int h;
+	int amount;
+} Cars;
+
+typedef struct {
 	double x;
 	double y;
 	int w;
@@ -69,17 +114,10 @@ typedef struct {
 } Frog;
 
 typedef struct {
-	char** shape;
-	double x;
-	double y;
-	int w;
-	int h;
-} Car;
-
-typedef struct {
 	Frog frog;
-	Car cars[MAX_CARS];
-	int carsAmount;
+	Cars cars;
+	Rocks rocks;
+	int lanes[HEIGHT];
 } Objects;
 
 typedef struct {
@@ -180,10 +218,9 @@ void deallocShape(char** in, const int H) {
 
 void deallocObjects(Objects* objects) {
 	deallocShape(objects->frog.shape, objects->frog.h);
-	
-	for (int i = 0; i < objects->carsAmount; ++i) {
-		deallocShape(objects->cars[i].shape, objects->cars[i].h);
-	}
+	deallocShape(objects->cars.leftShape, objects->cars.h);
+	deallocShape(objects->cars.rightShape, objects->cars.h);
+	deallocShape(objects->rocks.shape, objects->rocks.h);
 }
 
 void deallocMap(Map* map) {
@@ -205,6 +242,59 @@ char** allocShape(const int W, const int H) {
 	return out;
 }
 
+void initFrogShape(Frog* frog, FILE* file, int w, int h) {
+	frog->shape = allocShape(w, h);
+	frog->w = w;
+	frog->h = h;
+	char temp;
+
+	for (int i = 0; i < h; ++i) {
+		for (int j = 0; j < w; ++j) {
+			fscanf(file, "%c", &frog->shape[i][j]);
+		}
+		fscanf(file, "%c", &temp);
+	}
+}
+
+void initRocksShape(Rocks* rocks, FILE* file, int w, int h) {
+	rocks->shape = allocShape(w, h);
+	rocks->w = w;
+	rocks->h = h;
+	char temp;
+
+	for (int i = 0; i < h; ++i) {
+		for (int j = 0; j < w; ++j) {
+			fscanf(file, "%c", &rocks->shape[i][j]);
+		}
+		fscanf(file, "%c", &temp);
+	}
+}
+
+void initCarsShape(Cars* cars, FILE* file, const int w, const int h, const char side) {
+	cars->w = w;
+	cars->h = h;
+	char temp;
+
+	if (side == 'R') {
+		cars->rightShape = allocShape(w, h);
+		for (int i = 0; i < h; ++i) {
+			for (int j = 0; j < w; ++j) {
+				fscanf(file, "%c", &cars->rightShape[i][j]);
+			}
+		fscanf(file, "%c", &temp);
+	}
+
+	} else if (side == 'L') {
+		cars->leftShape = allocShape(w, h);
+		for (int i = 0; i < h; ++i) {
+			for (int j = 0; j < w; ++j) {
+				fscanf(file, "%c", &cars->leftShape[i][j]);
+			}
+		fscanf(file, "%c", &temp);
+		}
+	}
+}
+
 void initShapes(Objects* objects) {
 	FILE* file = fopen("data.csv", "r");
 	char buffer[BUFFER_SIZE];
@@ -218,40 +308,21 @@ void initShapes(Objects* objects) {
 		fscanf(file, "%c", &temp);
 
 		if (strcmp(buffer, "frogShape") == 0) {
-			objects->frog.shape = allocShape(w, h);
-			objects->frog.w = w;
-			objects->frog.h = h;
+			initFrogShape(&objects->frog, file, w, h);
 
+		} else if (strcmp(buffer, "carShapeL") == 0) {
+			initCarsShape(&objects->cars, file, w, h, 'L');
+
+		} else if (strcmp(buffer, "carShapeR") == 0) {
+			initCarsShape(&objects->cars, file, w, h, 'R');
+
+		} else if (strcmp(buffer, "rockShape") == 0) {
+			initRocksShape(&objects->rocks, file, w, h);
+
+		} else {
 			for (int i = 0; i < h; ++i) {
-				for (int j = 0; j < w; ++j) {
-					fscanf(file, "%c", &objects->frog.shape[i][j]);
-				}
-				fscanf(file, "%c", &temp);
+				fscanf(file, "%s", buffer);
 			}
-		}
-
-		if (strcmp(buffer, "carShape") == 0) {
-			char** tempShape = allocShape(w, h);
-
-			for (int i = 0; i < h; ++i) {
-				for (int j = 0; j < w; ++j) {
-					fscanf(file, "%c", &tempShape[i][j]);
-				}
-				fscanf(file, "%c", &temp);
-			}
-			for (int k = 0; k < objects->carsAmount; ++k) {
-				objects->cars[k].shape = allocShape(w, h);
-				objects->cars[k].w = w;
-				objects->cars[k].h = h;
-
-				for (int i = 0; i < h; ++i) {
-					for (int j = 0; j < w; ++j) {
-						objects->cars[k].shape[i][j] = tempShape[i][j];
-					}
-				}
-			}
-			
-			deallocShape(tempShape,  h);
 		}
 		
 	}
@@ -259,17 +330,87 @@ void initShapes(Objects* objects) {
 	fclose(file);
 }
 
-void initObjects(Objects* objects) {	
+void initLanes(int lanes[HEIGHT], int noneRatio, int carsRatio, int rocksRatio) {
+	lanes[0] = NONE;
+	lanes[HEIGHT - 1] = NONE;
+
+	int all = noneRatio + carsRatio + rocksRatio;
+	double r;
+
+	for (int i = 1; i < HEIGHT - 1; ++i) {
+		while (true) {
+			r = ((double)rand()) / RAND_MAX;
+
+			if (r <= noneRatio / (double)all) {
+				lanes[i] = NONE;
+			} else if (r <= (carsRatio + noneRatio) / (double)all) {
+				lanes[i] = CARS;
+			} else if (r <= (rocksRatio + carsRatio + noneRatio) / (double)all) {
+				lanes[i] = ROCKS;
+			}
+
+			if (lanes[i - 1] == ROCKS && lanes[i] == ROCKS ) {
+				continue;
+			} else {
+				break;
+			}
+		}
+
+	}
+}
+
+void initRocks(Objects* objects, const double FACTOR) {
+	objects->rocks.amount = 0;
+	double r;
+
+	for (int i = 0; i < HEIGHT; ++i) {
+		if (objects->lanes[i] != ROCKS) {
+			continue;
+		}
+
+		for (int j = 0; j < WIDTH; ++j) {
+			r = (((double)rand()) / RAND_MAX ) * 100;
+
+			if (r <= ROCK_DENSITY_1) {
+				objects->rocks.x[objects->rocks.amount] = j;
+				objects->rocks.y[objects->rocks.amount] = i;
+				objects->rocks.amount++;
+			}
+		}
+	}
+}
+
+void initCars(Objects* objects) {
+
+}
+
+void initFrog(Objects* objects) {
 	objects->frog.x = WIDTH / 2.0f;
 	objects->frog.y = HEIGHT - 1;
+}
 
-	for (int i = 0; i < INIT_CARS; ++i) {
-		objects->cars[i].x = rand() % WIDTH; // change to double possibly
-		objects->cars[i].y = rand() % HEIGHT;
-	}
-	objects->carsAmount = INIT_CARS;
+void initObjects(Objects* objects) { /// easy
+	initFrog(objects);
+
+	initLanes(objects->lanes, NONE_RATIO_1, CAR_RATIO_1, ROCK_RATIO_1);
+
+	initRocks(objects, ROCK_DENSITY_1);
+	initCars(objects);
 
 	initShapes(objects);
+}
+
+void putStreetLines(Map* map) {
+	for (int i = 0; i < HEIGHT; ++i) {
+		if (map->objects.lanes[i] == CARS) {
+			for (int j = 0; j < map->renderW; ++j) {
+				if (j % 10 == 0 || j % 10 == 1 || j % 10 == 2) {
+					map->tiles[i * map->objects.frog.h + 2][j].v = '-';
+					map->tiles[i * map->objects.frog.h + 2][j].c = STREET_COLOR;
+				}
+			}
+		}
+	}
 }
 
 void putShape(Map* map, const int X, const int Y, const int W, const int H, enum COLORS c, char** shape) {
@@ -292,9 +433,26 @@ void fillMap(Map* map) {
 		}
 	}
 
-	for (int i = 0; i < map->objects.carsAmount; ++i) {
-		Car* car = &map->objects.cars[i];
-		putShape(map, car->x, car->y, car->w, car->h, CAR_COLOR, car->shape);
+	putStreetLines(map);
+
+	// rocks
+	for (int i = 0; i < map->objects.rocks.amount; ++i) {
+		Rocks* rocks = &map->objects.rocks;
+		putShape(map, rocks->x[i], rocks->y[i], rocks->w, rocks->h, ROCK_COLOR, rocks->shape);
+	}
+
+	// cars
+	char** carShape;
+	for (int i = 0; i < map->objects.cars.amount; ++i) {
+		Cars* cars = &map->objects.cars;
+
+		if (cars->side[i] == 'R') {
+			carShape = cars->rightShape;
+		} else {
+			carShape = cars->rightShape;
+		}
+
+		putShape(map, cars->x[i], cars->y[i], cars->w, cars->h, CAR_COLOR, carShape);
 	}
 
 	Frog* frog = &map->objects.frog;
@@ -318,9 +476,24 @@ Map* initMap(Size* size) {
 /// UPDATE TICK
 
 void checkWin(Frog* frog) {
-	if (frog->y == 0) {
-		exit(0);
+	if (frog->y != 0) {
+		return;
 	}
+
+	char text[] = "Congratulations You Won!";
+	Size size = {40, 5};
+	Window won = initBasicWindow(&size);
+
+	mvwprintw(won.val, won.H / 2, won.W / 2 - strlen(text) / 2, "%s", text);
+	keypad(won.val, TRUE);
+	nodelay(won.val, FALSE);
+
+	int key;
+	do {
+		key = wgetch(won.val);
+	} while (key == ERR || key == KEY_UP);
+
+	exit(0);
 }
 
 void movePlayer(Frog* frog, const int KEY) {
@@ -362,18 +535,32 @@ void movePlayer(Frog* frog, const int KEY) {
 }
 
 void updateTick(Map* map, const int KEY) {
+	checkWin(&map->objects.frog);
+
 	movePlayer(&map->objects.frog, KEY);
 	fillMap(map);
-
-	checkWin(&map->objects.frog);
 }
 
 /// RENDER
 
-void renderMainWindow(Window* mainWindow, Map* map) {
+void renderBorder(Window* mainWindow) {
 	wattron(mainWindow->val,COLOR_PAIR(BORDER_COLOR));
 	wborder(mainWindow->val, '|', '|', '-', '-', '+', '+', '+', '+');
 	wattroff(mainWindow->val,COLOR_PAIR(BORDER_COLOR));
+}
+
+void renderFinishLine(Window* mainWindow, Map* map) {
+	wattron(mainWindow->val, COLOR_PAIR(FINISH_COLOR));
+	for (int i = 0; i < map->renderW; ++i) {
+		if (map->tiles[2][i].c == EMPTY_COLOR) {
+			mvwprintw(mainWindow->val, 2, i + 1, "=");
+		}	
+	}
+	wattroff(mainWindow->val, COLOR_PAIR(FINISH_COLOR));
+}
+
+void renderMainWindow(Window* mainWindow, Map* map) {
+	renderBorder(mainWindow);
 	
 	for (int i = 0; i < map->renderH; ++i) {
 		for (int j = 0; j < map->renderW; ++j) {
@@ -382,6 +569,8 @@ void renderMainWindow(Window* mainWindow, Map* map) {
 			wattroff(mainWindow->val, COLOR_PAIR(map->tiles[i][j].c));
 		}
 	}
+
+	renderFinishLine(mainWindow, map);
 	wrefresh(mainWindow->val);
 }
 
@@ -435,9 +624,12 @@ Size* initRenderSize() {
 
 void initColors() {
 	init_pair(EMPTY_COLOR, COLOR_RED, COLOR_BLACK); // none
-	init_pair(BORDER_COLOR, COLOR_BLACK, COLOR_CYAN); // border
-	init_pair(FROG_COLOR, COLOR_CYAN, COLOR_BLACK); // frog
+	init_pair(BORDER_COLOR, COLOR_BLACK, COLOR_BLUE); // border
+	init_pair(FROG_COLOR, COLOR_GREEN, COLOR_BLACK); // frog
 	init_pair(CAR_COLOR, COLOR_WHITE, COLOR_BLACK); // car
+	init_pair(FINISH_COLOR, COLOR_GREEN, COLOR_BLACK); // finish line
+	init_pair(STREET_COLOR, COLOR_WHITE, COLOR_BLACK); // street line
+	init_pair(ROCK_COLOR, COLOR_WHITE, COLOR_BLACK); // rock color
 }
 
 /// MAIN LOOP
@@ -471,6 +663,10 @@ void printFrog(Window* menu) {
 			}
 
 			deallocShape(shape, h);
+		} else {
+			for (int i = 0; i < h; ++i) {
+				fscanf(file, "%s", buffer);
+			}
 		}
 	}
 	fclose(file);

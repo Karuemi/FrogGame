@@ -2,8 +2,16 @@ frogShape 7 3
  ()~() 
 (-___-)
 ==`-'==
-carShape 9 3
+carShapeL 9 3
    __    
  _| =\__ 
 /o____o_\
+carShapeR 9 3
+   __    
+ _/= |__ 
+/_o____o\
+rockShape 7 3
+ _===_ 
+| '  .\
+=_`-'_=
 fileEnd
