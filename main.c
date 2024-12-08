@@ -8,6 +8,7 @@ https://www.geeksforgeeks.org/
 https://www.gnu.org/software/guile-ncurses/manual/html_node/Getting-characters-from-the-keyboard.html
 http://allaboutfrogs.org/gallery/frogstuff/ascii.html
 https://stackoverflow.com/
+https://www.asciiart.eu/animals/birds-land
 */
 
 #include <locale.h>
@@ -21,11 +22,12 @@ https://stackoverflow.com/
 #include <ncurses.h>
 #include <sys/time.h>
 #include <time.h>
+#include <math.h>
 
 enum TIMER {
 	TIMER_PRECISION = (int)1e6,
     FPS = 60,
-    TPS = 20
+    TPS = 40
 };
 
 enum COLORS {
@@ -33,6 +35,7 @@ enum COLORS {
 	BORDER_COLOR,
 	FINISH_COLOR,
 	FROG_COLOR,
+	STORK_COLOR,
 	CAR_COLOR,
 	STREET_COLOR,
 	ROCK_COLOR,
@@ -65,23 +68,6 @@ enum LANE_TYPES {
 	OTHER
 };
 
-enum LEVEL_1 {
-	NONE_RATIO_1 = 1,
-	CAR_RATIO_1 = 2,
-	ROCK_RATIO_1 = 2,
-	ROCK_DENSITY_1 = 20,
-	CAR_DENSITY_1 = 10,
-	CAR_PLACER_1 = 5,
-	IS_NORMAL_1 = 1,
-	IS_STOP_1 = 1,
-	IS_FRIEND_1 = 1,
-	IS_HOSTILE_1 = 1,
-	MIN_SPEED_1 = 100,
-	MAX_SPEED_1 = 500,
-	SPEED_UP_1 = 20,
-	REAPPEAR_DIST_1 = 50
-};
-
 enum MAP {
 	WIDTH = 15,
 	HEIGHT = 12,
@@ -90,7 +76,8 @@ enum MAP {
 	MAX_CARS = 64,
 	MIN_CARS = 5,
 	MAX_ROCKS = 128,
-	BUFFER_SIZE = 128
+	BUFFER_SIZE = 128,
+	MAX_REPLAY_INPUT = 1000
 };
 
 typedef struct {
@@ -105,6 +92,7 @@ typedef struct {
 	uint64_t sinceLastFrame;
 	uint64_t sinceLastTick;
 	uint64_t sinceStart;
+	int allTicks;
 
 	uint8_t renderFrame;
 	uint8_t updateTick;
@@ -121,17 +109,29 @@ typedef struct {
 	int noneRatio;
 	int carRatio;
 	int rockRatio;
-	int rockDensity;
-	int carDensity;
+	double rockDensity;
+	double carDensity;
 	int carPlacerSpacing;
+	int reappearDist;
 	uint8_t isNormal;
 	uint8_t isStop;
 	uint8_t isFriend;
 	uint8_t isHostile;
+	uint8_t isStork;
 	int maxSpeed;
 	int minSpeed;
-	int speedUp;
+	double speedUp;
+	double storkSpeed;
 } LevelInfo;
+
+typedef struct {
+	uint8_t keyInput;
+	long seed;
+	int playerInput[MAX_REPLAY_INPUT];
+	int tick[MAX_REPLAY_INPUT];
+	int inputAmount;
+	enum LEVELS level;
+} Replay;
 
 typedef struct {
 	char** shape;
@@ -150,7 +150,7 @@ typedef struct {
 	int w;
 	int h;
 	int amount;
-	int speedUp;
+	double speedUp;
 } Cars;
 
 typedef struct {
@@ -166,6 +166,15 @@ typedef struct {
 } Frog;
 
 typedef struct {
+	double x;
+	double y;
+	int w;
+	int h;
+	char** shape;
+	double speed;
+} Stork;
+
+typedef struct {
 	enum LANES v[HEIGHT];
 	enum LANE_TYPES type[HEIGHT];
 	double speed[HEIGHT];
@@ -178,6 +187,7 @@ typedef struct {
 typedef struct {
 	Frog frog;
 	Cars cars;
+	Stork stork;
 	Rocks rocks;
 	Lanes lanes;
 } Objects;
@@ -197,6 +207,7 @@ typedef struct {
 	Objects objects;
 	int renderW;
 	int renderH;
+	uint8_t isStork;
 } Map;
 
 /// INITIALIZATION
@@ -231,6 +242,7 @@ Timer* initTimer() {
 	timer->lastLoop = getCurrentTime();
 	timer->sinceLastFrame = 0;
 	timer->sinceLastTick = 0;
+	timer->allTicks = 0;
 
 	return timer;
 }
@@ -358,6 +370,20 @@ void initCarsShape(Cars* cars, FILE* file, const int w, const int h, enum LANES 
 	}
 }
 
+void initStorkShape(Stork* stork, FILE* file, int w, int h) {
+	stork->shape = allocShape(w, h);
+	stork->w = w;
+	stork->h = h;
+	char temp;
+
+	for (int i = 0; i < h; ++i) {
+		for (int j = 0; j < w; ++j) {
+			fscanf(file, "%c", &stork->shape[i][j]);
+		}
+		fscanf(file, "%c", &temp);
+	}
+}
+
 void initShapes(Objects* objects) {
 	FILE* file = fopen("data.csv", "r");
 	char buffer[BUFFER_SIZE];
@@ -381,6 +407,9 @@ void initShapes(Objects* objects) {
 
 		} else if (strcmp(buffer, "rockShape") == 0) {
 			initRocksShape(&objects->rocks, file, w, h);
+
+		}  else if (strcmp(buffer, "storkShape") == 0) {
+			initStorkShape(&objects->stork, file, w, h);
 
 		} else {
 			for (int i = 0; i < h; ++i) {
@@ -490,7 +519,7 @@ void initLanes(Lanes* lanes, int noneRatio, int carsRatio, int rocksRatio, int m
 	}
 }
 
-void initRocks(Objects* objects, const int ROCK_DENSITY) {
+void initRocks(Objects* objects, const double ROCK_DENSITY) {
 	objects->rocks.amount = 0;
 	double r;
 
@@ -500,7 +529,7 @@ void initRocks(Objects* objects, const int ROCK_DENSITY) {
 		}
 
 		for (int j = 0; j < WIDTH; ++j) {
-			r = (((double)rand()) / RAND_MAX ) * 100;
+			r = (((double)rand()) / RAND_MAX);
 
 			if (r <= ROCK_DENSITY) {
 				objects->rocks.x[objects->rocks.amount] = j;
@@ -511,7 +540,7 @@ void initRocks(Objects* objects, const int ROCK_DENSITY) {
 	}
 }
 
-void initCars(Map* map, Objects* objects, const int CAR_DENSITY, const int CAR_PLACER, const int SPEED_UP) {
+void initCars(Map* map, Objects* objects, const double CAR_DENSITY, const int CAR_PLACER, const double SPEED_UP) {
 	double r;
 	int placer = 0;
 	Cars* cars = &objects->cars;
@@ -545,7 +574,7 @@ void initCars(Map* map, Objects* objects, const int CAR_DENSITY, const int CAR_P
 				break;
 			}
 
-			r = (((double)rand()) / RAND_MAX ) * 100.0f;
+			r = (((double)rand()) / RAND_MAX );
 
 			if (r <= CAR_DENSITY) { 
 				cars->y[*amount] = i;
@@ -566,16 +595,24 @@ void initFrog(Objects* objects) {
 	objects->frog.queueEnding = 0;
 }
 
-void initObjects(Map* map) {
+void initStork(Stork* stork, Frog* frog, const double STORK_SPEED) {
+	stork->x = 0;
+	stork->y = (HEIGHT - 1) * frog->h - stork->h;
+	stork->speed = STORK_SPEED;
+}
+
+void initObjects(Map* map, LevelInfo* lInfo) {
 	initShapes(&map->objects);
 
 	initFrog(&map->objects);
+	initStork(&map->objects.stork, &map->objects.frog, lInfo->storkSpeed);
 
-	initLanes(&map->objects.lanes, NONE_RATIO_1, CAR_RATIO_1, ROCK_RATIO_1, MIN_SPEED_1, MAX_SPEED_1, REAPPEAR_DIST_1);
-	initLanesTypes(&map->objects.lanes, IS_NORMAL_1, IS_STOP_1, IS_FRIEND_1, IS_HOSTILE_1);
+	initLanes(&map->objects.lanes, lInfo->noneRatio, lInfo->carRatio, lInfo->rockRatio, 
+			lInfo->minSpeed, lInfo->maxSpeed, lInfo->reappearDist);
+	initLanesTypes(&map->objects.lanes, lInfo->isNormal, lInfo->isStop, lInfo->isFriend, lInfo->isHostile);
 
-	initRocks(&map->objects, ROCK_DENSITY_1);
-	initCars(map, &map->objects, CAR_DENSITY_1, CAR_PLACER_1, SPEED_UP_1);
+	initRocks(&map->objects, lInfo->rockDensity);
+	initCars(map, &map->objects, lInfo->carDensity, lInfo->carPlacerSpacing, lInfo->speedUp);
 }
 
 void putStreetLines(Map* map) {
@@ -677,25 +714,56 @@ void fillCars(Map* map) {
 
 void fillMap(Map* map) {
 	Frog* frog = &map->objects.frog;
+	Stork* stork = &map->objects.stork;
 
 	fillEmpty(map);
 	putStreetLines(map);
 	fillRocks(map);
 	fillCars(map);
 
+	if  (map->isStork) {
+		putShape(map, stork->x, stork->y, stork->w, stork->h, STORK_COLOR, stork->shape);
+	}
+	
 	putShape(map, frog->x * frog->w, frog->y * frog->h, frog->w, frog->h, FROG_COLOR, frog->shape);
 }
 
-Map* initMap(Size* size) {
+Map* initMap(LevelInfo* lInfo, Size* size) {
 	Map* map = allocMap(size);
 
 	map->renderW = size->w;
 	map->renderH = size->h;
+	map->isStork = lInfo->isStork;
 
-	initObjects(map);
+	initObjects(map, lInfo);
 	fillMap(map);
 
 	return map;
+}
+
+/// REPLAY
+
+void initReplay(Replay* replay, enum LEVELS level) {
+	replay->seed = time(NULL);
+	replay->inputAmount = 0;
+	replay->keyInput = 1;
+	replay->level = level;
+}
+
+void saveReplay(Replay* replay) {
+	FILE* f = fopen("replay.csv", "w");
+	if (f == NULL) {
+		return;
+	}
+
+	fprintf(f, "%d\n", replay->level);
+	fprintf(f, "%lu\n", replay->seed);
+
+	for (int i = 0; i < replay->inputAmount; ++i) {
+		fprintf(f, "%d %d\n", replay->tick[i], replay->playerInput[i]);
+	}
+
+	fclose(f);
 }
 
 /// UPDATE TICK
@@ -736,13 +804,15 @@ void popupWindow(char text[]) {
 	exit(0);
 }
 
-void checkEnding(Frog* frog) {
+void checkEnding(Frog* frog, Replay* replay) {
 	if (frog->y == 0) {
 		char text[] = "Congratulations You Won!";
+		saveReplay(replay);
 		popupWindow(text);
 	}
 	if (frog->queueEnding) {
 		char text[] = "You Lost the Game :(";
+		saveReplay(replay);
 		popupWindow(text);
 	}
 }
@@ -756,6 +826,33 @@ uint8_t checkCarCollision(Frog* frog, Cars* cars, int offX, int offY, int i) {
 	}
 	
 	return 0;
+}
+
+void handleStopCars(Lanes* lanes, Frog* frog, Cars* cars, int i, int* blockLaneSpeed) {
+	if (lanes->type[cars->y[i]] == STOP_CAR) {
+		if (checkCarCollision(frog, cars, 5, 0, i)) {
+			*blockLaneSpeed = cars->y[i];
+		} else {
+			lanes->speed[cars->y[i]] += cars->speedUp;
+			if (lanes->speed[cars->y[i]] >= lanes->setSpeed[cars->y[i]]) {
+				lanes->speed[cars->y[i]] = lanes->setSpeed[cars->y[i]];
+			}
+		}
+	}
+}
+
+void handleHostileCars(Lanes* lanes, Frog* frog, Cars* cars, int i, int* increaseLaneSpeed) {
+	if (lanes->type[cars->y[i]] == HOSTILE_CAR) {
+		if (checkCarCollision(frog, cars, WIDTH * frog->w, 0, i)) {
+			*increaseLaneSpeed = cars->y[i];
+		} else {
+			lanes->speed[cars->y[i]] -= cars->speedUp;
+
+			if (lanes->speed[cars->y[i]] <= lanes->setSpeed[cars->y[i]]) {
+				lanes->speed[cars->y[i]] = lanes->setSpeed[cars->y[i]];
+			}
+		}
+	}
 }
 
 void handleCars(Lanes* lanes, Frog* frog, Cars* cars) {
@@ -777,28 +874,8 @@ void handleCars(Lanes* lanes, Frog* frog, Cars* cars) {
 			}
 		}
 
-		if (lanes->type[cars->y[i]] == STOP_CAR) {
-			if (checkCarCollision(frog, cars, 5, 0, i)) {
-				blockLaneSpeed = cars->y[i];
-			} else {
-				lanes->speed[cars->y[i]] += cars->speedUp * 0.01f;
-				if (lanes->speed[cars->y[i]] >= lanes->setSpeed[cars->y[i]]) {
-					lanes->speed[cars->y[i]] = lanes->setSpeed[cars->y[i]];
-				}
-			}
-		}
-
-		if (lanes->type[cars->y[i]] == HOSTILE_CAR) {
-			if (checkCarCollision(frog, cars, WIDTH * frog->w, 0, i)) {
-				increaseLaneSpeed = cars->y[i];
-			} else {
-				lanes->speed[cars->y[i]] -= cars->speedUp * 0.01f;
-
-				if (lanes->speed[cars->y[i]] <= lanes->setSpeed[cars->y[i]]) {
-					lanes->speed[cars->y[i]] = lanes->setSpeed[cars->y[i]];
-				}
-			}
-		}
+		handleStopCars(lanes, frog, cars, i, &blockLaneSpeed);
+		handleHostileCars(lanes, frog, cars, i, &increaseLaneSpeed);
 	}
 
 	for (int i = 0; i < HEIGHT; ++i) {
@@ -811,7 +888,7 @@ void handleCars(Lanes* lanes, Frog* frog, Cars* cars) {
 		}
 
 		if (increaseLaneSpeed != -1) {
-			lanes->speed[increaseLaneSpeed] += cars->speedUp * 0.01f;
+			lanes->speed[increaseLaneSpeed] += cars->speedUp;
 		}
 	}
 }
@@ -918,12 +995,44 @@ void moveCars(Map* map) {
 	}
 }
 
-void updateTick(Map* map, const int KEY) {
-	checkEnding(&map->objects.frog);
+void storkCollision(Stork* stork, Frog* frog) {
+	if (frog->x * frog->w < stork->x + stork->w &&
+		frog->x * frog->w + frog->w > stork->x &&
+		frog->y * frog->h < stork->y + stork->h &&
+		frog->y * frog->h + frog->h > stork->y) {
+		frog->queueEnding = 1;
+	}
+}
+
+void moveStork(Stork* stork, Frog* frog) {
+	if (fabs(stork->x - (double)frog->x * frog->w) > 1) {
+		if (stork->x < frog->x * frog->w) {
+			stork->x += stork->speed;
+		} else if (stork->x >= frog->x * frog->w) {
+			stork->x -= stork->speed;
+		} 
+	}
+	
+	if (fabs(stork->y - (double)frog->y * frog->h) > 1) {
+		if (stork->y < frog->y * frog->h) {
+			stork->y += stork->speed;
+		} else if (stork->y >= frog->y * frog->h) {
+			stork->y -= stork->speed;
+		}
+	}
+
+	storkCollision(stork, frog);
+}
+
+void updateTick(Map* map, Replay* replay, const int KEY) {
+	checkEnding(&map->objects.frog, replay);
 
 	moveCars(map);
 
 	movePlayer(&map->objects.frog, &map->objects.rocks, KEY);
+	if (map->isStork) {
+		moveStork(&map->objects.stork, &map->objects.frog);
+	}
 
 	handleCars(&map->objects.lanes, &map->objects.frog, &map->objects.cars);
 
@@ -1041,6 +1150,7 @@ void initColors() {
 	init_pair(EMPTY_COLOR, COLOR_RED, COLOR_BLACK);
 	init_pair(BORDER_COLOR, COLOR_BLACK, COLOR_BLUE);
 	init_pair(FROG_COLOR, COLOR_GREEN, COLOR_BLACK);
+	init_pair(STORK_COLOR, COLOR_RED, COLOR_BLACK);
 	init_pair(FINISH_COLOR, COLOR_GREEN, COLOR_BLACK);
 	init_pair(STREET_COLOR, COLOR_WHITE, COLOR_BLACK);
 	init_pair(ROCK_COLOR, COLOR_WHITE, COLOR_BLACK);
@@ -1048,6 +1158,129 @@ void initColors() {
 	init_pair(STOP_CAR_COLOR, COLOR_YELLOW, COLOR_BLACK);
 	init_pair(FRIEND_CAR_COLOR, COLOR_MAGENTA, COLOR_BLACK);
 	init_pair(HOSTILE_CAR_COLOR, COLOR_RED, COLOR_BLACK);
+}
+
+/// LEVELS
+
+void buildEasyLevel(LevelInfo* lInfo) {
+	lInfo->noneRatio = 1;
+	lInfo->carRatio = 2;
+	lInfo->rockRatio = 2;
+	lInfo->rockDensity = 0.2f;
+	lInfo->carDensity = 0.1f;
+	lInfo->carPlacerSpacing = 6;
+	lInfo->isNormal = 0;
+	lInfo->isStop = 1;
+	lInfo->isFriend = 1;
+	lInfo->isHostile = 0;
+	lInfo->minSpeed = 40; // in percents
+	lInfo->maxSpeed = 80; // in percents
+	lInfo->speedUp = 0.02f;
+	lInfo->reappearDist = 50;
+	lInfo->isStork = 0;
+	lInfo->storkSpeed = 0.05f;
+}
+
+void buildMediumLevel(LevelInfo* lInfo) {
+	lInfo->noneRatio = 0;
+	lInfo->carRatio = 2;
+	lInfo->rockRatio = 2;
+	lInfo->rockDensity = 0.4f;
+	lInfo->carDensity = 0.1f;
+	lInfo->carPlacerSpacing = 4;
+	lInfo->isNormal = 1;
+	lInfo->isStop = 1;
+	lInfo->isFriend = 0;
+	lInfo->isHostile = 1;
+	lInfo->minSpeed = 50; // in percents
+	lInfo->maxSpeed = 150; // in percents
+	lInfo->speedUp = 0.02f;
+	lInfo->reappearDist = 50;
+	lInfo->isStork = 1;
+	lInfo->storkSpeed = 0.1f;
+}
+
+void buildHardLevel(LevelInfo* lInfo) {
+	lInfo->noneRatio = 0;
+	lInfo->carRatio = 1;
+	lInfo->rockRatio = 1;
+	lInfo->rockDensity = 0.5f;
+	lInfo->carDensity = 0.2f;
+	lInfo->carPlacerSpacing = 3;
+	lInfo->isNormal = 0;
+	lInfo->isStop = 0;
+	lInfo->isFriend = 0;
+	lInfo->isHostile = 1;
+	lInfo->minSpeed = 50; // in percents
+	lInfo->maxSpeed = 300; // in percents
+	lInfo->speedUp = 0.08f;
+	lInfo->reappearDist = 50;
+	lInfo->isStork = 1;
+	lInfo->storkSpeed = 0.05f;
+}
+
+void buildReplayLevel(Replay* replay, LevelInfo* lInfo) {
+	replay->keyInput = 0;
+	
+	FILE* f = fopen("replay.csv", "r");
+
+	if (f == NULL) {
+		exit(0);
+	}
+
+	fscanf(f, "%d", &replay->level);
+	fscanf(f, "%lu", &replay->seed);
+	
+	switch(replay->level) {
+		case EASY:
+			buildEasyLevel(lInfo);
+		break;
+
+		case MEDIUM:
+			buildMediumLevel(lInfo);
+		break;
+
+		case HARD:
+			buildHardLevel(lInfo);
+		break;
+
+		default:
+			exit(0);
+		break;
+	}
+
+	int a = 0;
+	while (!feof(f)) {
+		fscanf(f, "%d%d", &replay->tick[a], &replay->playerInput[a]);
+		a++;
+	}
+	replay->inputAmount = a;
+
+	fclose(f);
+}
+
+LevelInfo* buildLevel(Replay* replay, enum LEVELS level) {
+	LevelInfo* lInfo = (LevelInfo*)malloc(sizeof(LevelInfo));
+
+	switch(level) {
+		case EASY:
+			buildEasyLevel(lInfo);
+		break;
+
+		case MEDIUM:
+			buildMediumLevel(lInfo);
+		break;
+
+		case HARD:
+			buildHardLevel(lInfo);
+		break;
+
+		case REPLAY:
+			buildReplayLevel(replay, lInfo);
+		break;
+	}
+
+	return lInfo;
 }
 
 /// MAIN LOOP
@@ -1147,34 +1380,32 @@ void showMenu(Size* size, enum LEVELS* level) {
 	delwin(menu.val);
 }
 
-void runGame() {
-	srand(time(NULL));
-	
-    Timer* timer = initTimer();
-    u_int8_t continueLoop = true;
-
-	Size* renderSize = initRenderSize();
-
-	enum LEVELS level;
-	showMenu(renderSize, &level);
-	
-	Window mainWindow = initWindow(renderSize->h + STATUS_HEIGHT, renderSize->h + 2, renderSize->w + 2, 0, 0);
-
-	Window statusWindow = initWindow(renderSize->h + STATUS_HEIGHT, STATUS_HEIGHT, renderSize->w + 2, 0, renderSize->h + 1);
-	StatusInfo* statusInfo = (StatusInfo*)malloc(sizeof(StatusInfo));
-
-	initColors();
-	bkgd(COLOR_PAIR(EMPTY_COLOR));
-
-	Map* map = initMap(renderSize);
-	int key = 0;
-	int noerrKey = 0;
+void mainLoop(Window* mainWindow, Window* statusWindow, Map* map, Timer* timer, LevelInfo* lInfo, enum LEVELS level, StatusInfo* sInfo, Replay* replay) {
+	int key, noerrKey, a = 0;
 
 	timer->start = getCurrentTime();
-    while (continueLoop) {
+	timer->lastLoop = getCurrentTime();
+	while (true) {
 		updateTimer(timer);
-		updateStatusInfo(statusInfo, level, timer, &map->objects.frog);
-		key = getch();
+		updateStatusInfo(sInfo, level, timer, &map->objects.frog);
+
+		if (replay->keyInput) {
+			key = getch();
+			if (a < MAX_REPLAY_INPUT && key != -1) {
+				replay->playerInput[a] = key;
+				replay->tick[a] = timer->allTicks;
+				a++;
+
+				replay->inputAmount = a;
+			}
+		} else {
+			key = ERR;
+
+			if (a < MAX_REPLAY_INPUT && replay->tick[a] == timer->allTicks) {
+				key = replay->playerInput[a];
+				a++;
+			}
+		}
 
 		if (key != ERR) {
 			noerrKey = key;
@@ -1182,24 +1413,56 @@ void runGame() {
 
 		if (timer->updateTick) {
 			timer->updateTick = 0;
-			updateTick(map, noerrKey);
+			updateTick(map, replay, noerrKey);
+			timer->allTicks++;
 			noerrKey = ERR;
 		}
 
 		if (timer->renderFrame) {
 			timer->renderFrame = 0;
-			renderFrame(&mainWindow, &statusWindow, map, statusInfo);
+			renderFrame(mainWindow, statusWindow, map, sInfo);
 		}
     }
+}
 
+void runGame() {	
+    Timer* timer = initTimer();
+
+	Size* renderSize = initRenderSize();
+
+	enum LEVELS level;
+	showMenu(renderSize, &level);
+
+	Replay replay;
+	initReplay(&replay, level);
+
+	LevelInfo* lInfo = buildLevel(&replay, level);
+
+	srand(replay.seed);
+	
+	Window mainW = initWindow(renderSize->h + STATUS_HEIGHT, renderSize->h + 2, renderSize->w + 2, 0, 0);
+
+	Window statusW = initWindow(renderSize->h + STATUS_HEIGHT, STATUS_HEIGHT, renderSize->w + 2, 0, renderSize->h + 1);
+	StatusInfo* sInfo = (StatusInfo*)malloc(sizeof(StatusInfo));
+
+	initColors();
+	bkgd(COLOR_PAIR(EMPTY_COLOR));
+
+	Map* map = initMap(lInfo, renderSize);
+	int key = 0;
+	int noerrKey = 0;
+
+	mainLoop(&mainW, &statusW, map, timer, lInfo, level, sInfo, &replay);
+    
 	deallocMap(map);
 
 	free(renderSize);
-	free(statusInfo);
+	free(sInfo);
 	free(timer);
+	free(lInfo);
 
-	delwin(mainWindow.val);
-	delwin(statusWindow.val);
+	delwin(mainW.val);
+	delwin(statusW.val);
 }
 
 int main() {
