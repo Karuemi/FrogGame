@@ -15,10 +15,24 @@ enum TIMER {
     TPS = 5
 };
 
+enum COLORS {
+	EMPTY_COLOR = 0,
+	BORDER_COLOR,
+	FROG_COLOR,
+	CAR_COLOR
+};
+
+enum LEVELS {
+	EASY = 0,
+	MEDIUM,
+	HARD,
+	REPLAY
+};
+
 enum MAP {
 	WIDTH = 15,
 	HEIGHT = 10,
-	STATUS_HEIGHT = 10,
+	STATUS_HEIGHT = 5,
 	INIT_CARS = 5,
 	MAX_CARS = 64,
 	BUFFER_SIZE = 128
@@ -74,7 +88,12 @@ typedef struct {
 } Size;
 
 typedef struct {
-	char** v;
+	enum COLORS c;
+	char v;
+} Tile;
+
+typedef struct {
+	Tile** tiles;
 	Objects objects;
 	int renderW;
 	int renderH;
@@ -92,14 +111,9 @@ Window initWindow(const int WHOLE_HEIGHT, const int H, const int W, const int of
 	return window;
 }
 
-// TODO 
-
-void splashScreen(WINDOW* win) {
-	mvwaddstr(win, 1, 1, "Do you want to play a game?");
-	mvwaddstr(win, 2, 1, "Press any key to continue..");
-	wgetch(win);
-	wclear(win);
-	wrefresh(win);
+Window initBasicWindow(Size* size) {
+	Window window = initWindow(size->h + STATUS_HEIGHT, size->h  + STATUS_HEIGHT + 1, size->w + 2, 0, 0);
+	return window;
 }
 
 /// TIMER
@@ -147,10 +161,10 @@ void updateTimer(Timer* timer) {
 Map* allocMap(Size* size) {
 	Map* map = (Map*)malloc(sizeof(Map));
 
-	map->v = (char**)malloc(sizeof(char*) * size->h);
+	map->tiles = (Tile**)malloc(sizeof(Tile*) * size->h);
 
 	for (int i = 0; i < size->h; ++i) {
-		map->v[i] = (char*)malloc(sizeof(char) * size->w);
+		map->tiles[i] = (Tile*)malloc(sizeof(Tile) * size->w);
 	}
 
 	return map;
@@ -175,9 +189,9 @@ void deallocObjects(Objects* objects) {
 void deallocMap(Map* map) {
 	deallocObjects(&map->objects);
 	for (int i = 0; i < map->renderH; ++i) {
-		free(map->v[i]);
+		free(map->tiles[i]);
 	}
-	free(map->v);
+	free(map->tiles);
 	free(map);
 }
 
@@ -258,10 +272,14 @@ void initObjects(Objects* objects) {
 	initShapes(objects);
 }
 
-void putShape(Map* map, const int X, const int Y, const int W, const int H, char** shape) {
+void putShape(Map* map, const int X, const int Y, const int W, const int H, enum COLORS c, char** shape) {
 	for (int i = 0; i < H; ++i) {
 		for (int j = 0; j < W; ++j) {
-			map->v[Y * H + i][X * W + j] = shape[i][j];
+			if (Y * H + i >= map->renderH || X * W + j >= map->renderW) {
+				continue;
+			}
+			map->tiles[Y * H + i][X * W + j].v = shape[i][j];
+			map->tiles[Y * H + i][X * W + j].c = c;
 		}
 	}
 }
@@ -269,17 +287,18 @@ void putShape(Map* map, const int X, const int Y, const int W, const int H, char
 void fillMap(Map* map) {
 	for (int i = 0; i < map->renderH; ++i) {
 		for (int j = 0; j < map->renderW; ++j) {
-			map->v[i][j] = ' ';
+			map->tiles[i][j].v = ' ';
+			map->tiles[i][j].c = EMPTY_COLOR;
 		}
 	}
 
 	for (int i = 0; i < map->objects.carsAmount; ++i) {
 		Car* car = &map->objects.cars[i];
-		putShape(map, car->x, car->y, car->w, car->h, car->shape);
+		putShape(map, car->x, car->y, car->w, car->h, CAR_COLOR, car->shape);
 	}
 
 	Frog* frog = &map->objects.frog;
-	putShape(map, frog->x, frog->y, frog->w, frog->h, frog->shape);
+	putShape(map, frog->x, frog->y, frog->w, frog->h, FROG_COLOR, frog->shape);
 }
 
 Map* initMap(Size* size) {
@@ -297,6 +316,12 @@ Map* initMap(Size* size) {
 }
 
 /// UPDATE TICK
+
+void checkWin(Frog* frog) {
+	if (frog->y == 0) {
+		exit(0);
+	}
+}
 
 void movePlayer(Frog* frog, const int KEY) {
 	if (KEY == ERR) {
@@ -339,23 +364,39 @@ void movePlayer(Frog* frog, const int KEY) {
 void updateTick(Map* map, const int KEY) {
 	movePlayer(&map->objects.frog, KEY);
 	fillMap(map);
+
+	checkWin(&map->objects.frog);
 }
 
 /// RENDER
 
 void renderMainWindow(Window* mainWindow, Map* map) {
+	wattron(mainWindow->val,COLOR_PAIR(BORDER_COLOR));
 	wborder(mainWindow->val, '|', '|', '-', '-', '+', '+', '+', '+');
+	wattroff(mainWindow->val,COLOR_PAIR(BORDER_COLOR));
+	
 	for (int i = 0; i < map->renderH; ++i) {
 		for (int j = 0; j < map->renderW; ++j) {
-			mvwprintw(mainWindow->val, i + 1, j + 1, "%c", map->v[i][j]);
+			wattron(mainWindow->val, COLOR_PAIR(map->tiles[i][j].c));
+			mvwprintw(mainWindow->val, i + 1, j + 1, "%c", map->tiles[i][j].v);
+			wattroff(mainWindow->val, COLOR_PAIR(map->tiles[i][j].c));
 		}
 	}
 	wrefresh(mainWindow->val);
 }
 
 void renderStatusWindow(Window* statusWindow, StatusInfo* info) {
+	wattron(statusWindow->val, COLOR_PAIR(BORDER_COLOR));
 	wborder(statusWindow->val, '|', '|', '-', '-', '+', '+', '+', '+');
+
+	for (int i = 1; i < statusWindow->H - 1; ++i) {
+		for (int j = 1; j < statusWindow->W - 1; ++j) {
+			mvwprintw(statusWindow->val, i, j, " ");
+		}
+	}
+
 	mvwprintw(statusWindow->val, statusWindow->H / 2.0f, 2, "Time: %.02lf", info->timePassed);
+	wattroff(statusWindow->val, COLOR_PAIR(BORDER_COLOR));
 	wrefresh(statusWindow->val);
 }
 
@@ -378,7 +419,7 @@ Size* initRenderSize() {
 	while (!feof(file)) {
 		fscanf(file, "%s", buffer);
  
-		if (strcmp(buffer, "frogSize") == 0) {
+		if (strcmp(buffer, "frogShape") == 0) {
 			fscanf(file, "%d", &size->w);
 			fscanf(file, "%d", &size->h);
 		}
@@ -389,13 +430,108 @@ Size* initRenderSize() {
 	size->w *= WIDTH;
 	size->h *= HEIGHT;
 
-	size->w = 105;
-	size->h = 30;
-
 	return size;
 }
 
+void initColors() {
+	init_pair(EMPTY_COLOR, COLOR_RED, COLOR_BLACK); // none
+	init_pair(BORDER_COLOR, COLOR_BLACK, COLOR_CYAN); // border
+	init_pair(FROG_COLOR, COLOR_CYAN, COLOR_BLACK); // frog
+	init_pair(CAR_COLOR, COLOR_WHITE, COLOR_BLACK); // car
+}
+
 /// MAIN LOOP
+
+void printFrog(Window* menu) {
+	FILE* file = fopen("data.csv", "r");
+	char buffer[BUFFER_SIZE];
+	int w, h;
+	char temp;
+
+	while (!feof(file)) {
+		fscanf(file, "%s", buffer);
+		fscanf(file, "%d", &w);
+		fscanf(file, "%d", &h);
+		fscanf(file, "%c", &temp);
+
+		if (strcmp(buffer, "frogShape") == 0) {
+			char** shape = allocShape(w, h);
+
+			for (int i = 0; i < h; ++i) {
+				for (int j = 0; j < w; ++j) {
+					fscanf(file, "%c", &shape[i][j]);
+				}
+				fscanf(file, "%c", &temp);
+			}
+
+			for (int i = 0; i < h; ++i) {
+				for (int j = 0; j < w; ++j) {
+					mvwprintw(menu->val, menu->H * 0.75f + i, menu->W /2 + j - w / 2, "%c", shape[i][j]);
+				}
+			}
+
+			deallocShape(shape, h);
+		}
+	}
+	fclose(file);
+}
+
+void showMenu(Size* size, enum LEVELS* level) {
+	Window menu = initBasicWindow(size);
+	char* content[5];
+	for (int i = 0; i < 4; ++i) {
+		content[i] = (char*)malloc(sizeof(char) * 128 );
+	}
+	strcpy(content[0], "Level Easy");
+	strcpy(content[1], "Level Medium");
+	strcpy(content[2], "Level Hard");
+	strcpy(content[3], "Replay Last Session");
+	strcpy(content[4], "Game made by Pawel Richert s203693");
+	
+	keypad(menu.val, TRUE);
+	nodelay(menu.val, TRUE);
+
+	int cursorPos = 0;
+	int key;
+	char temp;
+
+	do {
+		key = wgetch(menu.val);
+
+		if (key == KEY_DOWN) {
+			if (cursorPos < 3) {
+				cursorPos++;
+			}
+		} else  if (key == KEY_UP) {
+			if (cursorPos > 0) {
+				cursorPos--;
+			}
+		}
+
+		for (int i = 0; i < 4; ++i) {
+			if (cursorPos == i) {
+				temp = '>';
+			} else {
+				temp = ' ';
+			}
+
+			mvwprintw(menu.val, menu.H / 2 + i * 2 - 8, menu.W / 2 - strlen(content[i]) / 2 - 3, "%c", temp);
+			mvwprintw(menu.val, menu.H / 2 + i * 2 - 8, menu.W / 2 - strlen(content[i]) / 2, "%s", content[i]);
+		}
+
+		mvwprintw(menu.val, menu.H  - 3, menu.W / 2 - strlen(content[4]) / 2, "%s", content[4]);
+		printFrog(&menu);
+		wrefresh(menu.val);
+	} while (key != '\n') ;
+
+	*level = cursorPos;
+	
+	for (int i = 0; i < 4; ++i) {
+		free(content[i]);
+	}
+
+	delwin(menu.val);
+}
 
 void runGame() {
 	srand(time(NULL));
@@ -404,16 +540,23 @@ void runGame() {
     u_int8_t continueLoop = true;
 
 	Size* renderSize = initRenderSize();
+
+	enum LEVELS level = EASY;
+	showMenu(renderSize, &level);
 	
 	Window mainWindow = initWindow(renderSize->h + STATUS_HEIGHT, renderSize->h + 2, renderSize->w + 2, 0, 0);
 
 	Window statusWindow = initWindow(renderSize->h + STATUS_HEIGHT, STATUS_HEIGHT, renderSize->w + 2, 0, renderSize->h + 1);
 	StatusInfo* statusInfo = (StatusInfo*)malloc(sizeof(StatusInfo));
 
+	initColors();
+	bkgd(COLOR_PAIR(EMPTY_COLOR));
+
 	Map* map = initMap(renderSize);
 	int key = 0;
 	int noerrKey = 0;
 
+	timer->start = getCurrentTime();
     while (continueLoop) {
 		updateTimer(timer);
 		updateStatusInfo(statusInfo, timer);
@@ -445,19 +588,16 @@ void runGame() {
 	delwin(statusWindow.val);
 }
 
-
 int main() {
 	initscr();
 	//setlocale(LC_ALL, "");
+	keypad(stdscr, TRUE);
+	nodelay(stdscr, TRUE);
 	start_color();
     noecho();
 	cbreak();
 	curs_set(0);
 
-	nodelay(stdscr, TRUE);
-	keypad(stdscr, TRUE);
-
-    //splashScreen(gameWindow);
 	runGame();
 
     endwin();
