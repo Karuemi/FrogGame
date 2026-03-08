@@ -16,6 +16,8 @@ Ensure you have the latest C compiler (`gcc`), `make` and the `ncurses` library 
 
 ***Please maximize your terminal window before starting the game to ensure the graphics render correctly.***
 
+## Build and run
+
 Run this command in terminal to compile and open the game:
 ```bash
 make exec
