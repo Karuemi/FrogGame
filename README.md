@@ -14,7 +14,7 @@ This game is designed for **Linux/Unix** environments.
 
 Ensure you have the latest C compiler (`gcc`), `make` and the `ncurses` library installed.
 
-Please maximize your terminal window before starting the game to ensure the graphics render correctly.
+***Please maximize your terminal window before starting the game to ensure the graphics render correctly.***
 
 Run this command in terminal to compile and open the game:
 ```bash
